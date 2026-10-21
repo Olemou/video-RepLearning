@@ -6,12 +6,13 @@ pretrained V-JEPA 2 visual backbone with a trainable causal temporal adapter,
 a ViCo-LWIR Eq. 10 semantic objective, view alignment, future prediction, and
 teacher retention.
 
-The latest completed 100-epoch run achieves strong separation on all 14 fitted source
-videos. A new balanced manifest for `/home/olemou/videos` contains 78 clean and
-78 cold-spill byte-unique videos; it has not yet been trained. The completed run
-does not yet prove that the representation recognizes the physical
-spill rather than scene-correlated cues, and its attention maps do not establish
-pixel localization. The repository includes explicit audits for those limits.
+The original 14-video optimization study and a later 80-video experiment achieve
+strong class separation. The 80-video run uses 64 training sources and 16
+source-validation sources, with recurring environments across the split.
+Its perfect validation classification does not establish spill localization.
+A decoder-free spatial-branch ablation also retains perfect classification,
+but mirror regularization collapses its attention toward uniform maps. These
+findings and the original architecture audit are recorded below.
 
 ## Current pipeline
 
@@ -654,11 +655,63 @@ masks and quantitative metrics such as IoU or pointing accuracy. A claim of
 generalization across tasks, objects, and environments requires group-held-out
 data where every related source and derived view stays outside training.
 
-## 11. Tests and environment
+## 11. Decoder-free spatial semantic experiment
 
-The local environment uses Python 3.11-3.13, PyTorch 2.7, torchvision 0.22,
-Transformers 4.57.6, and Accelerate 1.15. FFmpeg and FFprobe are required for
-video export and validation.
+`scripts/train_spatial_semantic.py` adds an independent spatial branch while
+freezing the original temporal checkpoint and V-JEPA. The temporal pipeline
+and its executable defaults above are unchanged. This experiment reuses the
+verified identity/mirror causal patch cache, preserving `[time,16,16,1024]`
+instead of averaging patches before the new branch. It uses a 128-wide,
+one-layer spatial Transformer, two prototype-conditioned class queries and
+fixed-order query summaries for its episode embedding. Labels do not route
+the embedding or select validation maps. There is no segmentation decoder.
+
+The spatial objective is `ViCo(z_spatial) + lambda * mirror_TV`. Original
+alignment, prediction and retention losses are monitored constants because
+the temporal branch is frozen; they do not regularize the spatial branch.
+Mirror TV is a proposed adaptation of equivariance regularization, not part
+of ViCo-LWIR or a published formula for this combined system.
+
+On a two-GPU allocation, an explicit warmup comparison can be reproduced with
+a new output directory:
+
+```bash
+python -m torch.distributed.run --standalone --nproc_per_node=2 \
+  scripts/train_spatial_semantic.py --mirror-policy warmup \
+  --output /path/to/new/spatial_experiment
+python -m torch.distributed.run --standalone --nproc_per_node=2 \
+  scripts/control_spatial_semantic.py --run /path/to/new/spatial_experiment
+python scripts/report_spatial_semantic.py --run /path/to/new/spatial_experiment
+```
+
+Defaults are seed 239, 100 full-batch updates of the original 64 training
+sources, both cached identity/mirror views, LR 1e-3, and AdamW reset before
+update 21. This is two fixed views, not the eight-view augmentation bank.
+`--mirror-policy guarded` is the executable default and preserves the first
+failed scheduling ablation. The `warmup` variant ramps the training-gradient
+calibrated coefficient over 20 updates. Neither schedule is recommended for
+localization: guarded weighting vanished as ViCo converged, and warmup
+produced essentially uniform, class-independent attention.
+
+The matched no-mirror and warmup variants both classify 16/16 validation
+sources correctly. Mirror TV falls from 0.203394 to 0.000115497, but normalized
+entropy reaches 1 and clean/spill map cosine reaches 1. Temporal state and
+prediction drift are exactly zero. Retain the original model for recognition;
+these new checkpoints do not establish a spill localizer. There are no masks,
+no warm videos and no independent scene test in this experiment.
+
+See the [spatial experiment report](reports/experiments/spatial_semantic_mirror_warmup_80_sources_20261021/report.md)
+for shared-scale maps of every validation video, input-removal controls,
+classification/retrieval metrics, schedule failures and reproducibility details.
+The [original diagnosis](reports/experiments/trajectory_80_sources_real_ddp_all_losses_20261021/research_diagnosis/report.md)
+documents the original spatial pooling bottleneck and shortcut evidence.
+
+## 12. Tests and environment
+
+The package declares Python 3.11-3.13, PyTorch 2.7, torchvision 0.22,
+Transformers 4.57.6, and Accelerate 1.15. The available experiment environment
+is Python 3.12 with PyTorch 2.11.0+cu128; `.venv/bin/python` is absent.
+FFmpeg and FFprobe are required for video export and validation.
 
 ```bash
 cd /home/olemou/video-RepLearning
@@ -671,7 +724,7 @@ augmentation behavior, causal trajectory handling, checkpoint conversion,
 final-block reconstruction, FFmpeg decoding, pipeline orchestration, and
 video attribution. Distributed tests need local socket access; run them on a
 node where that access is available. The real two-GPU smoke run is documented
-in [cluster.md](cluster.md). The latest full suite completed with **143 passed,
+in [cluster.md](cluster.md). The latest full suite completed with **151 passed,
 4 skipped**.
 
 Historical Gaussian, shared-denominator SupCon, margin, and duplicate-containing
