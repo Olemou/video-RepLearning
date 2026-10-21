@@ -1,17 +1,48 @@
-"""TorchCodec dataset backed by the validated JSONL manifest."""
+"""Manifest video dataset with TorchCodec or FFmpeg CPU decoding."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
+import subprocess
 from typing import Any, Callable
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
 from .sampling import TemporalSampler, TemporalSamplingConfig
 from .labels import label_for
+
+
+def _ffmpeg_frames(path: Path, record: "ManifestRecord", indices: np.ndarray,
+                   *, threads: int) -> tuple[torch.Tensor, float, int]:
+    """Decode exact, selected frame numbers when TorchCodec is unavailable."""
+    probe = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
+                            "-show_entries", "stream=nb_read_frames,avg_frame_rate,width,height",
+                            "-of", "json", str(path)], capture_output=True, text=True, check=True)
+    stream = json.loads(probe.stdout)["streams"][0]
+    count = int(stream["nb_read_frames"])
+    fps = float(Fraction(stream["avg_frame_rate"]))
+    width, height = int(stream["width"]), int(stream["height"])
+    if count != record.num_frames or (width, height) != (record.width, record.height):
+        raise RuntimeError(f"Manifest/decode metadata mismatch for {record.video_id}")
+    selected = sorted(set(int(value) for value in indices))
+    expression = "+".join(f"eq(n\\,{value})" for value in selected)
+    decoded = subprocess.run(["ffmpeg", "-v", "error", "-threads", str(threads),
+                              "-i", str(path), "-an", "-vf", f"select={expression}",
+                              "-vsync", "0", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
+                             capture_output=True, check=True)
+    pixels = np.frombuffer(decoded.stdout, dtype=np.uint8)
+    expected = len(selected) * height * width * 3
+    if pixels.size != expected:
+        raise RuntimeError(f"FFmpeg returned {pixels.size} bytes, expected {expected}, for {path}")
+    unique_frames = pixels.reshape(len(selected), height, width, 3)
+    positions = {frame_index: position for position, frame_index in enumerate(selected)}
+    ordered = np.stack([unique_frames[positions[int(value)]] for value in indices])
+    return torch.from_numpy(ordered.copy()).permute(0, 3, 1, 2), fps, count
 
 
 @dataclass(frozen=True)
@@ -99,32 +130,36 @@ class VideoManifestDataset(Dataset[dict[str, Any]]):
     def __getitem__(self, index: int) -> dict[str, Any]:
         try:
             from torchcodec.decoders import VideoDecoder
-        except ImportError as exc:
-            raise ImportError("TorchCodec is required to decode the generated MP4 dataset") from exc
+        except ImportError:
+            VideoDecoder = None
 
         record = self.records[index]
         path = self.dataset_root / record.video_path
-        decoder = VideoDecoder(
-            path,
-            dimension_order="NCHW",
-            num_ffmpeg_threads=self.decoder_threads,
-            device="cpu",
-            seek_mode="exact",
-        )
-        metadata = decoder.metadata
-        frame_count = len(decoder)
-        source_fps = float(metadata.average_fps)
-        if frame_count != record.num_frames:
-            raise RuntimeError(
-                f"Manifest/decode frame mismatch for {record.video_id}: "
-                f"{record.num_frames} vs {frame_count}"
-            )
+        if VideoDecoder is None:
+            # The manifest has already been validated. FFprobe checks it again
+            # before accepting FFmpeg's exact selected-frame decode.
+            frame_count, source_fps = record.num_frames, record.fps
+        else:
+            decoder = VideoDecoder(path, dimension_order="NCHW",
+                                   num_ffmpeg_threads=self.decoder_threads,
+                                   device="cpu", seek_mode="exact")
+            frame_count = len(decoder)
+            source_fps = float(decoder.metadata.average_fps)
+            if frame_count != record.num_frames:
+                raise RuntimeError(f"Manifest/decode frame mismatch for {record.video_id}: "
+                                   f"{record.num_frames} vs {frame_count}")
         indices, valid_mask = self.sampler.sample_with_validity(
             num_frames=frame_count,
             source_fps=source_fps,
             sample_index=index,
         )
-        frames = decoder.get_frames_at(indices=indices.tolist()).data
+        if VideoDecoder is None:
+            frames, decoded_fps, decoded_count = _ffmpeg_frames(
+                path, record, indices, threads=self.decoder_threads)
+            if decoded_count != frame_count or abs(decoded_fps - source_fps) > 1e-3:
+                raise RuntimeError(f"Manifest/decode FPS or frame-count mismatch for {record.video_id}")
+        else:
+            frames = decoder.get_frames_at(indices=indices.tolist()).data
         if tuple(frames.shape[:2]) != (self.sampler.config.clip_length, 3):
             raise RuntimeError(f"Unexpected decoded tensor shape: {tuple(frames.shape)}")
 

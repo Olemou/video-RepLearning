@@ -1,7 +1,8 @@
 """Final-block replay for exact query selection and class-conditioned VJPs.
 
-This is a one-block attention-times-gradient diagnostic, not full transformer
-relevance propagation, pixel attribution, or a trained segmentation output.
+This exposes differentiable final-block probabilities. Callers choose plain
+positive gradients or attention-times-gradient; these are distinct diagnostics,
+not full relevance propagation, pixel attribution, or segmentation outputs.
 """
 import math
 

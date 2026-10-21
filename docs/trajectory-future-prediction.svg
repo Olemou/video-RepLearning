@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="720" viewBox="0 0 1180 720" role="img" aria-labelledby="title desc">
+  <title id="title">How causal future-feature prediction works</title>
+  <desc id="desc">At a current tubelet, the trajectory model uses only features up through that time to predict frozen encoder features for later prefixes at horizons one, two, and four. Later features are targets for the loss, not inputs to the current prediction.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; fill: #172033; }
+      .title { font-size: 26px; font-weight: 700; }
+      .subtitle { font-size: 16px; fill: #475569; }
+      .head { font-size: 17px; font-weight: 700; }
+      .body { font-size: 14px; }
+      .small { font-size: 12px; fill: #475569; }
+      .box { stroke-width: 2; rx: 12; }
+      .axis { stroke: #475569; stroke-width: 2; marker-end: url(#arrow); }
+      .pred { stroke: #2563eb; stroke-width: 2.5; stroke-dasharray: 7 6; fill: none; marker-end: url(#arrow); }
+      .target { stroke: #ea580c; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1180" height="720" fill="#f8fafc"/>
+  <text x="48" y="48" class="title">The future target is an answer used for learning—not an input to the forecast</text>
+  <text x="48" y="77" class="subtitle">One frozen encoder creates each prefix feature; the trainable trajectory model forecasts later encoder features.</text>
+
+  <text x="65" y="128" class="head">Example: current position is t₂ = 1.0 s; one feature step is about 0.5 s</text>
+  <line x1="100" y1="208" x2="1060" y2="208" class="axis"/>
+
+  <g>
+    <rect x="110" y="166" width="120" height="82" class="box" fill="#dbeafe" stroke="#2563eb"/>
+    <text x="145" y="195" class="head">z₁</text><text x="125" y="222" class="small">prefix to 0.5 s</text>
+    <rect x="285" y="166" width="120" height="82" class="box" fill="#dbeafe" stroke="#2563eb"/>
+    <text x="320" y="195" class="head">z₂</text><text x="300" y="222" class="small">prefix to 1.0 s</text>
+    <rect x="460" y="166" width="120" height="82" class="box" fill="#ffedd5" stroke="#ea580c"/>
+    <text x="495" y="195" class="head">z₃</text><text x="475" y="222" class="small">prefix to 1.5 s</text>
+    <rect x="635" y="166" width="120" height="82" class="box" fill="#ffedd5" stroke="#ea580c"/>
+    <text x="670" y="195" class="head">z₄</text><text x="650" y="222" class="small">prefix to 2.0 s</text>
+    <rect x="810" y="166" width="120" height="82" class="box" fill="#ffedd5" stroke="#ea580c"/>
+    <text x="845" y="195" class="head">z₅</text><text x="825" y="222" class="small">prefix to 2.5 s</text>
+    <rect x="985" y="166" width="120" height="82" class="box" fill="#ffedd5" stroke="#ea580c"/>
+    <text x="1020" y="195" class="head">z₆</text><text x="1000" y="222" class="small">prefix to 3.0 s</text>
+  </g>
+
+  <path d="M110 270 H405" stroke="#2563eb" stroke-width="8" stroke-linecap="round"/>
+  <text x="112" y="298" class="body" fill="#1d4ed8">Information available for the forecast at t₂: z₁ and z₂</text>
+  <text x="112" y="319" class="small">The causal mask means the output at t₂ cannot use z₃, z₄, z₅, or z₆.</text>
+
+  <rect x="110" y="358" width="315" height="104" class="box" fill="#ede9fe" stroke="#7c3aed"/>
+  <text x="135" y="390" class="head">Trajectory model at t₂</text>
+  <text x="135" y="418" class="body">Builds current state h₂ and dynamics d₂</text>
+  <text x="135" y="441" class="small">Uses current/past prefix features only</text>
+
+  <path d="M428 410 H530" class="pred"/>
+  <text x="445" y="394" class="small">forecast</text>
+
+  <rect x="535" y="348" width="570" height="125" class="box" fill="#eff6ff" stroke="#2563eb"/>
+  <text x="560" y="380" class="head">Make three forecasts from t₂</text>
+  <text x="560" y="411" class="body">horizon 1 → predict z₃ (about 0.5 s ahead)</text>
+  <text x="560" y="438" class="body">horizon 2 → predict z₄ (about 1.0 s ahead)</text>
+  <text x="560" y="465" class="body">horizon 4 → predict z₆ (about 2.0 s ahead)</text>
+
+  <path d="M720 478 C690 520 550 520 520 253" class="target"/>
+  <path d="M820 478 C790 535 690 535 695 253" class="target"/>
+  <path d="M990 478 C970 548 905 548 1045 253" class="target"/>
+  <text x="585" y="535" class="small" fill="#c2410c">Orange future features are looked up only as targets to score the forecasts.</text>
+  <text x="585" y="555" class="small">They are not fed backward into the prediction made at t₂.</text>
+
+  <rect x="65" y="595" width="1050" height="82" class="box" fill="#fff" stroke="#94a3b8"/>
+  <text x="90" y="628" class="head">What the loss asks</text>
+  <text x="90" y="654" class="body">“Given what the video representation looks like now, can the model estimate how the same encoder will represent a later, longer video prefix?”</text>
+</svg>

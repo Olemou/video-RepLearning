@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="790" viewBox="0 0 1120 790" role="img" aria-labelledby="title desc">
+  <title id="title">How the trajectory training loss is assembled</title>
+  <desc id="desc">A frozen encoder creates feature sequences. A trainable trajectory model is trained with four losses. Each loss is multiplied by its weight, then the weighted contributions are added into one total used for learning.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; fill: #172033; }
+      .title { font-size: 26px; font-weight: 700; }
+      .subtitle { font-size: 16px; fill: #475569; }
+      .heading { font-size: 17px; font-weight: 700; }
+      .body { font-size: 14px; }
+      .small { font-size: 12px; fill: #475569; }
+      .math { font-size: 16px; font-weight: 700; }
+      .box { stroke-width: 2; rx: 14; }
+      .arrow { stroke: #475569; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1120" height="790" fill="#f8fafc"/>
+  <text x="48" y="48" class="title">How the trajectory training loss becomes one number</text>
+  <text x="48" y="76" class="subtitle">The optimizer uses the weighted sum to improve the trainable trajectory model.</text>
+
+  <rect x="48" y="112" width="300" height="102" class="box" fill="#e0f2fe" stroke="#0284c7"/>
+  <text x="72" y="145" class="heading">One frozen encoder</text>
+  <text x="72" y="172" class="body">Creates features for each video prefix:</text>
+  <text x="72" y="194" class="body">z₁, z₂, z₃, z₄, ...</text>
+
+  <path d="M350 163 H405" class="arrow"/>
+
+  <rect x="415" y="112" width="300" height="102" class="box" fill="#ede9fe" stroke="#7c3aed"/>
+  <text x="439" y="145" class="heading">Trainable trajectory model</text>
+  <text x="439" y="172" class="body">Reads current/past features;</text>
+  <text x="439" y="194" class="body">makes states, dynamics, predictions.</text>
+
+  <path d="M717 163 H775" class="arrow"/>
+  <text x="790" y="145" class="heading">Measure four errors</text>
+
+  <rect x="48" y="257" width="480" height="76" class="box" fill="#fef3c7" stroke="#d97706"/>
+  <text x="70" y="286" class="heading">Semantic loss: 0.20</text>
+  <text x="70" y="311" class="body">Are same-class video summaries closer than different-class ones?</text>
+
+  <rect x="48" y="347" width="480" height="76" class="box" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="70" y="376" class="heading">Alignment loss: 0.40</text>
+  <text x="70" y="401" class="body">Do two matched views of a video have similar dynamics?</text>
+
+  <rect x="48" y="437" width="480" height="76" class="box" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="70" y="466" class="heading">Prediction loss: 0.08</text>
+  <text x="70" y="491" class="body">Can past features predict a later encoder feature?</text>
+
+  <rect x="48" y="527" width="480" height="76" class="box" fill="#fce7f3" stroke="#db2777"/>
+  <text x="70" y="556" class="heading">Retention loss: 0.30</text>
+  <text x="70" y="581" class="body">Do adapted states preserve the encoder's feature information?</text>
+
+  <rect x="568" y="257" width="500" height="346" class="box" fill="#ffffff" stroke="#94a3b8"/>
+  <text x="594" y="291" class="heading">Scale each error, then add the contributions</text>
+
+  <text x="598" y="335" class="body">semantic</text>
+  <text x="900" y="335" class="math">1.00 × 0.20 = 0.20</text>
+  <text x="598" y="379" class="body">alignment</text>
+  <text x="900" y="379" class="math">0.10 × 0.40 = 0.04</text>
+  <text x="598" y="423" class="body">prediction</text>
+  <text x="900" y="423" class="math">1.00 × 0.08 = 0.08</text>
+  <text x="598" y="467" class="body">retention</text>
+  <text x="900" y="467" class="math">0.10 × 0.30 = 0.03</text>
+  <path d="M594 491 H1040" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="598" y="530" class="heading">total</text>
+  <text x="900" y="530" class="math">0.20 + 0.04 + 0.08 + 0.03</text>
+  <text x="900" y="560" class="heading">= 0.35</text>
+
+  <rect x="48" y="640" width="1020" height="104" class="box" fill="#fff" stroke="#334155"/>
+  <text x="72" y="675" class="heading">What “predict_weight × prediction” means</text>
+  <text x="72" y="704" class="body">It is a priority knob: with weight 1, the prediction error contributes its full value (0.08 here).</text>
+  <text x="72" y="728" class="body">With weight 0.5 it would contribute 0.04; with weight 0 it would not affect total. It does not change the prediction itself.</text>
+</svg>

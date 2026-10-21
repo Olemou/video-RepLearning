@@ -4,6 +4,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 import torch.nn.functional as F
+import torch.distributed as dist
 
 from .vico import vico_pairwise_contrastive
 
@@ -86,6 +87,26 @@ def trajectory_loss(model, teacher, valid, timestamps, labels, *, epoch: int,
     stamps = timestamps[:, None].expand(n, views, time).reshape(n * views, time)
     frozen = teacher.detach().reshape(n * views, time, width)
     output = model(frozen, mask, stamps)
+    return trajectory_loss_from_output(model, teacher, valid, timestamps, labels, output,
+        epoch=epoch, curriculum_epochs=curriculum_epochs, align_weight=align_weight,
+        predict_weight=predict_weight, keep_weight=keep_weight, horizons=horizons)
+
+
+def trajectory_loss_from_output(model, teacher, valid, timestamps, labels, output, *, epoch: int,
+                                curriculum_epochs: int = 20, align_weight: float = 0.1,
+                                predict_weight: float = 1.0, keep_weight: float = 0.1,
+                                horizons: tuple[int, ...] = (1, 2, 4)):
+    """Apply the same full-batch objective to gathered distributed model outputs."""
+    if teacher.ndim != 4 or teacher.shape[1] != 2:
+        raise ValueError("Two synchronized views [N,2,T,D] are required")
+    if any(w < 0 for w in (align_weight, predict_weight, keep_weight)):
+        raise ValueError("Loss weights must be nonnegative")
+    if not horizons or any(k < 1 for k in horizons):
+        raise ValueError("Prediction horizons must be positive")
+    n, views, time, width = teacher.shape
+    mask = valid[:, None].expand(n, views, time).reshape(n * views, time)
+    stamps = timestamps[:, None].expand(n, views, time).reshape(n * views, time)
+    frozen = teacher.detach().reshape(n * views, time, width)
     semantic, details = vico_pairwise_contrastive(
         output["embedding"], labels.repeat_interleave(2),
         source_ids=torch.arange(n, device=labels.device).repeat_interleave(2),
@@ -118,3 +139,72 @@ def trajectory_loss(model, teacher, valid, timestamps, labels, *, epoch: int,
                    prediction_loss=prediction, retention_loss=retention,
                    persistence_loss=baseline, prediction_to_persistence=prediction / baseline.clamp_min(1e-12))
     return total, details, output
+
+
+class DistributedTrajectoryStep(nn.Module):
+    """Full global ViCo and temporal objective from source-sharded DDP forwards.
+
+    Every rank evaluates the same global loss. Differentiable all-gather sums
+    output gradients in its backward; DDP then averages parameter gradients.
+    """
+
+    def __init__(self, model: TrajectoryModel):
+        super().__init__()
+        self.model = model
+
+    def forward(self, teacher, valid, timestamps, labels, *, epoch: int,
+                curriculum_epochs: int = 20, align_weight: float = .1,
+                predict_weight: float = 1., keep_weight: float = .1,
+                microbatch_sources: int | None = None):
+        weights = dict(epoch=epoch, curriculum_epochs=curriculum_epochs,
+                       align_weight=align_weight, predict_weight=predict_weight,
+                       keep_weight=keep_weight)
+        if microbatch_sources is not None and microbatch_sources < 1:
+            raise ValueError("microbatch_sources must be positive")
+        if microbatch_sources is None and (not dist.is_available() or not dist.is_initialized()
+                                           or dist.get_world_size() == 1):
+            return trajectory_loss(self.model, teacher, valid, timestamps, labels, **weights)
+        n, views, time, width = teacher.shape
+        if views != 2 or n == 0:
+            raise ValueError("Each distributed rank needs source videos with two views")
+        mask = valid[:, None].expand(n, views, time).reshape(n * views, time)
+        stamps = timestamps[:, None].expand(n, views, time).reshape(n * views, time)
+        source_chunk = microbatch_sources or n
+        chunks = []
+        for start in range(0, n, source_chunk):
+            stop = min(start + source_chunk, n)
+            chunks.append(self.model(
+                teacher[start:stop].detach().reshape((stop - start) * views, time, width),
+                mask[start * views:stop * views], stamps[start * views:stop * views]))
+        local = {key: torch.cat([part[key] for part in chunks], dim=0) for key in chunks[0]}
+        if not dist.is_available() or not dist.is_initialized() or dist.get_world_size() == 1:
+            return trajectory_loss_from_output(self.model, teacher, valid, timestamps,
+                                               labels, local, **weights)
+        from torch.distributed.nn.functional import all_gather as differentiable_gather
+        local_count = torch.tensor([n], device=teacher.device, dtype=torch.long)
+        rank_counts = [torch.zeros_like(local_count) for _ in range(dist.get_world_size())]
+        dist.all_gather(rank_counts, local_count)
+        counts = [int(value.item()) for value in rank_counts]
+        maximum = max(counts)
+
+        def gather_output(value):
+            padding = value.new_zeros((2 * (maximum - n), *value.shape[1:]))
+            pieces = differentiable_gather(torch.cat((value, padding), dim=0))
+            return torch.cat([piece[:2 * count] for piece, count in zip(pieces, counts)], dim=0)
+
+        gathered_output = {key: gather_output(value) for key, value in local.items()}
+
+        def gather_data(value):
+            padding = value.new_zeros((maximum - n, *value.shape[1:]))
+            padded = torch.cat((value, padding), dim=0)
+            pieces = [torch.empty_like(padded) for _ in range(dist.get_world_size())]
+            dist.all_gather(pieces, padded)
+            return torch.cat([piece[:count] for piece, count in zip(pieces, counts)], dim=0)
+
+        global_teacher = gather_data(teacher.detach())
+        global_valid = gather_data(valid)
+        global_timestamps = gather_data(timestamps)
+        global_labels = gather_data(labels)
+        return trajectory_loss_from_output(self.model, global_teacher, global_valid,
+                                           global_timestamps, global_labels,
+                                           gathered_output, **weights)

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.distributed as dist
+from torch.utils.data.distributed import DistributedSampler
 from types import SimpleNamespace
 
 
@@ -56,6 +57,36 @@ def all_reduce_sum(value: torch.Tensor) -> torch.Tensor:
     if dist.is_available() and dist.is_initialized():
         dist.all_reduce(result, op=dist.ReduceOp.SUM)
     return result
+
+
+def unpadded_sampler_indices(sampler: DistributedSampler, dataset_size: int) -> tuple[list[int], int]:
+    """Remove only DistributedSampler's repeated tail entries.
+
+    With drop_last=False, the sampler pads its global index list to a multiple
+    of world size, then gives rank r positions r, r+world, ... . The padded
+    positions begin at dataset_size even when the original list is shuffled.
+    """
+    if sampler.drop_last or len(sampler.dataset) != dataset_size:
+        raise ValueError("Expected a full, non-dropping DistributedSampler")
+    assigned = list(sampler)
+    unique = [index for position, index in enumerate(assigned)
+              if sampler.rank + position * sampler.num_replicas < dataset_size]
+    if not unique:
+        raise ValueError("Every rank must receive at least one real source video")
+    return unique, len(assigned) - len(unique)
+
+
+def audit_distributed_indices(local_indices: list[int], dataset_size: int) -> tuple[list[int], list[int]]:
+    """Check globally that each source is assigned exactly once, in rank order."""
+    if dist.is_available() and dist.is_initialized():
+        shards = [None] * dist.get_world_size()
+        dist.all_gather_object(shards, local_indices)
+    else:
+        shards = [local_indices]
+    flattened = [index for shard in shards for index in shard]
+    if sorted(flattened) != list(range(dataset_size)):
+        raise RuntimeError("Distributed sampler omitted or duplicated source videos")
+    return flattened, [len(shard) for shard in shards]
 
 
 def gather_contrastive_batch(output, labels, original_ids):
