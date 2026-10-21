@@ -1,0 +1,39 @@
+training:
+  seed: 239
+  epochs: 100
+  frozen_encoder_recipe:
+    variant: adaptive_refinement
+    calibration_epochs: 40  # Used only by fixed-phase ablations; adaptive uses the criterion below.
+    refinement_threshold: 0.001
+    refinement_patience: 5  # Five near-floor evaluations after the curriculum before freezing means.
+    refinement_max_iter: 40  # L-BFGS iterations per refinement epoch, plus line searches.
+    refinement_precision: float64  # Smooth scalar objective; heads remain float32.
+    curriculum_epochs: 19  # Hold the objective schedule fixed after epoch 20.
+    seeds: [239, 240, 241]
+    feature_cache: checkpoints/masked_video_features.pt
+    manifest: dataset/manifest.jsonl
+    output: reports/training_masked_100_epochs
+  batch_size_per_rank: 6  # Frozen recipe uses balanced 3+3 batches in the joint phase.
+  gradient_accumulation_steps: 1
+  max_grad_norm: 1.0
+  amp_dtype: float32  # Train heads in float32; frozen feature extraction uses bfloat16.
+  checkpoint_dir: checkpoints
+  checkpoint_every_epochs: 1
+  loss:
+    name: stable-uncertainty-contrastive-v1
+    temperature: 0.1
+    compatibility_scale: 1.0
+    positive_lambda_min: 0.1
+    negative_temperature_high: 1.0
+    negative_temperature_low: 0.1
+    uncertainty_weight: 0.01
+    epsilon: 1.0e-6
+
+optimizer:
+  name: adamw
+  learning_rate: 5.25e-4
+  weight_decay: 0.04
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  warmup_steps: 0
+  final_learning_rate: 1.0e-6

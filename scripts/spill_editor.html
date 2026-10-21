@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spill mask painter</title>
+<style>
+:root{color-scheme:dark;font:16px system-ui}*{box-sizing:border-box}body{margin:0;background:#101820;color:#ebf2f6}main{max-width:1200px;margin:auto;padding:24px}h1{margin:0;font-size:27px}p{color:#b8c8d3;line-height:1.6}button,select,input{font:inherit}button,select{border:1px solid #50616e;border-radius:8px;padding:10px;background:#23313d;color:white;cursor:pointer}button[aria-pressed=true]{background:#17624c;border-color:#70e3b5}.primary{background:#15704f}button:disabled{opacity:.45;cursor:wait}.bar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:16px 0}.layout{display:grid;grid-template-columns:minmax(0,760px) 240px;gap:22px}canvas{display:block;width:100%;height:auto;touch-action:none;background:#000;border-radius:8px;cursor:crosshair}aside{background:#182630;border-radius:12px;padding:18px;align-self:start}label{display:block;margin-bottom:14px}input[type=range]{width:100%}#notice{min-height:26px;color:#8be9bd}#status{color:#c9d9e3;margin-bottom:12px}.hint{font-size:14px}progress{width:160px;accent-color:#62d6a4}.preview{width:120px;margin-top:8px;image-rendering:pixelated}@media(max-width:800px){.layout{grid-template-columns:1fr}main{padding:12px}}
+</style>
+<main><h1>Spill mask painter</h1><p>Hold the mouse button and paint over the spill. Release to finish a stroke. Only painted pixels are marked as spill.</p>
+<div class="bar"><select id="video" aria-label="Choose video"></select><progress id="progress" value="0" max="1"></progress><span id="count"></span></div>
+<div id="status">Loading frames…</div><div class="layout"><div><canvas id="canvas" width="256" height="256" aria-label="Paint spill on this frame"></canvas>
+<div class="bar"><button id="previous">← Previous</button><button id="save" class="primary">Save + next</button><button id="next">Next →</button><button id="empty">No spill in this frame</button></div><div id="notice" role="status"></div></div>
+<aside><div class="bar"><button id="paint" aria-pressed="true">Paint</button><button id="erase" aria-pressed="false">Eraser</button></div>
+<label>Brush size <output id="sizeValue">12</output><input id="size" type="range" min="1" max="60" value="12"></label>
+<label>Overlay opacity<input id="opacity" type="range" min="0" max="70" value="35"></label>
+<label><input type="checkbox" id="show" checked> Show painted region</label>
+<div class="bar"><button id="undo">Undo</button><button id="redo">Redo</button><button id="clear">Clear</button></div>
+<p class="hint">Paint inside the spill with a large brush, then refine the edges with a small brush. Use the eraser for corrections.</p>
+<p class="hint">B: paint · E: eraser<br>Ctrl/Cmd+Z: undo<br>Enter: save and continue</p>
+<span class="hint">Your mask: white = spill</span><canvas id="preview" class="preview" width="256" height="256"></canvas></aside></div></main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id), canvas=$('canvas'),ctx=canvas.getContext('2d');
+const mask=document.createElement('canvas');mask.width=mask.height=256;const mc=mask.getContext('2d',{willReadFrequently:true});
+const overlay=document.createElement('canvas');overlay.width=overlay.height=256;const oc=overlay.getContext('2d');
+let items=[],index=0,img=null,mode='paint',drawing=false,last=null,cursor=null,dirty=false,busy=true,undo=[],redo=[],version=0;
+function blank(){mc.fillStyle='#000';mc.fillRect(0,0,256,256)}blank();
+function snapshot(){return mc.getImageData(0,0,256,256)}
+function remember(){undo.push(snapshot());if(undo.length>40)undo.shift();redo=[]}
+function mark(){dirty=true;update();render()}
+function update(){const x=items[index];if(!x)return;$('video').value=x.video_id;$('count').textContent=`${items.filter(i=>i.annotated).length} / ${items.length} saved`;$('progress').max=items.length;$('progress').value=items.filter(i=>i.annotated).length;
+ $('status').textContent=`${x.video_id} · Frame ${index+1} of ${items.length} · Source ${x.source_frame} · ${dirty?'Unsaved changes':x.annotated?'Saved — ready to edit':'Not annotated'}`;
+ for(const id of ['save','empty','previous','next','clear','paint','erase'])$(id).disabled=busy;
+ $('undo').disabled=busy||!undo.length;$('redo').disabled=busy||!redo.length;$('video').disabled=busy;}
+function render(){if(!img)return;ctx.drawImage(img,0,0,256,256);const source=snapshot(),tint=oc.createImageData(256,256);
+ // RGB mask intensity determines transparency. Black mask pixels are opaque
+ // in the PNG, so using their alpha would tint the entire image.
+ for(let p=0;p<source.data.length;p+=4){tint.data[p]=255;tint.data[p+1]=65;tint.data[p+2]=80;tint.data[p+3]=source.data[p]>=128?Math.round(255*Number($('opacity').value)/100):0}
+ oc.putImageData(tint,0,0);if($('show').checked)ctx.drawImage(overlay,0,0);$('preview').getContext('2d').drawImage(mask,0,0);
+ if(cursor&&!busy){ctx.beginPath();ctx.arc(...cursor,Number($('size').value)/2,0,Math.PI*2);ctx.strokeStyle='white';ctx.lineWidth=.65;ctx.stroke()}}
+function readImage(url){return new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>resolve(image);image.onerror=()=>reject(new Error('Cannot load image'));image.src=url+'?v='+Date.now()})}
+async function load(){const ticket=++version;busy=true;dirty=false;undo=[];redo=[];cursor=null;update();$('notice').textContent='Loading frame…';
+ try{const x=items[index],original=await readImage(x.url),saved=x.annotated?await readImage(x.mask_url):null;if(ticket!==version)return;img=original;blank();if(saved)mc.drawImage(saved,0,0,256,256);busy=false;$('notice').textContent='';update();render()}
+ catch(e){$('notice').textContent=e.message+' — refresh to retry.'}}
+function navigate(target){if(busy)return;if(dirty&&!confirm('Discard unsaved changes to this frame?')){$('video').value=items[index].video_id;return}index=Math.max(0,Math.min(items.length-1,target));load()}
+function point(e){const r=canvas.getBoundingClientRect();return[Math.max(0,Math.min(255,(e.clientX-r.left)*256/r.width)),Math.max(0,Math.min(255,(e.clientY-r.top)*256/r.height))]}
+function dab(a,b){mc.strokeStyle=mc.fillStyle=mode==='erase'?'#000':'#fff';mc.lineCap=mc.lineJoin='round';mc.lineWidth=Number($('size').value);mc.beginPath();mc.moveTo(...a);mc.lineTo(...b);mc.stroke();mc.beginPath();mc.arc(...b,mc.lineWidth/2,0,Math.PI*2);mc.fill();mark()}
+canvas.onpointerdown=e=>{if(busy||e.button!==0)return;e.preventDefault();canvas.setPointerCapture(e.pointerId);remember();drawing=true;last=cursor=point(e);dab(last,last)};
+canvas.onpointermove=e=>{cursor=point(e);if(drawing){dab(last,cursor);last=cursor}else render()};
+canvas.onpointerup=canvas.onpointercancel=()=>{drawing=false;last=null};canvas.onlostpointercapture=()=>{drawing=false};canvas.onpointerleave=()=>{if(!drawing){cursor=null;render()}};
+function setMode(value){mode=value;$('paint').setAttribute('aria-pressed',value==='paint');$('erase').setAttribute('aria-pressed',value==='erase');render()}
+$('paint').onclick=()=>setMode('paint');$('erase').onclick=()=>setMode('erase');$('size').oninput=()=>{$('sizeValue').textContent=$('size').value;render()};$('opacity').oninput=$('show').onchange=render;
+$('undo').onclick=()=>{if(!undo.length||busy)return;redo.push(snapshot());mc.putImageData(undo.pop(),0,0);mark()};$('redo').onclick=()=>{if(!redo.length||busy)return;undo.push(snapshot());mc.putImageData(redo.pop(),0,0);mark()};
+$('clear').onclick=()=>{remember();blank();mark()};$('previous').onclick=()=>navigate(index-1);$('next').onclick=()=>navigate(index+1);$('video').onchange=()=>navigate(items.findIndex(x=>x.video_id===$('video').value));
+async function save(empty=false){if(busy||drawing)return;if(empty){if(!confirm('Save this inspected frame as containing no spill?'))return;remember();blank();mark()}
+ const pixels=snapshot();let any=false;for(let i=0;i<pixels.data.length;i+=4){let value=pixels.data[i]>=128?255:0;pixels.data[i]=pixels.data[i+1]=pixels.data[i+2]=value;pixels.data[i+3]=255;any ||= value===255}
+ if(!empty&&!any&&!confirm('The mask is empty. Confirm there is no visible spill?'))return;
+ const encoded=document.createElement('canvas');encoded.width=encoded.height=256;encoded.getContext('2d').putImageData(pixels,0,0);busy=true;update();$('notice').textContent='Saving…';
+ try{const x=items[index],r=await fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video_id:x.video_id,file:x.file,data:encoded.toDataURL('image/png')})});if(!r.ok)throw new Error(await r.text());x.annotated=true;dirty=false;busy=false;if(index<items.length-1){index++;await load()}else{update();render();$('notice').textContent='Last frame saved. Check the saved count for any skipped frames.'}}
+ catch(e){busy=false;update();$('notice').textContent='Save failed: '+e.message+' Your drawing is still here.'}}
+$('save').onclick=()=>save();$('empty').onclick=()=>save(true);
+window.onbeforeunload=e=>{if(dirty){e.preventDefault();e.returnValue=''}};
+document.onkeydown=e=>{if(busy||['INPUT','SELECT','BUTTON'].includes(e.target.tagName))return;if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();$(e.shiftKey?'redo':'undo').click()}else if(e.key==='Enter'){e.preventDefault();save()}else if(e.key.toLowerCase()==='b')setMode('paint');else if(e.key.toLowerCase()==='e')setMode('erase')};
+fetch('/api/items').then(r=>r.json()).then(data=>{items=data;if(!items.length)throw new Error('No frames found');for(const id of new Set(items.map(x=>x.video_id))){const option=new Option(id,id);$('video').add(option)}index=Math.max(0,items.findIndex(x=>!x.annotated));load()}).catch(e=>$('notice').textContent=e.message);
+</script>

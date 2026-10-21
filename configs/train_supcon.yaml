@@ -1,0 +1,23 @@
+# Stage one: learn video-level spill/no-spill representations.
+# Extract a masked V-JEPA feature cache before running scripts/train.py.
+training:
+  seed: 239
+  epochs: 2000  # Maximum; stop only after all anchors meet the training convergence criterion.
+  video_representation:
+    cache: reports/experiments/unique_7_clean_7_spill/checkpoints/checkpoint_full_frame_flip_features.pt
+    manifest: reports/experiments/unique_7_clean_7_spill/manifest.jsonl
+    dataset_root: dataset
+    output: reports/video_supcon_revised
+    folds: 7
+    bottleneck: 64
+    head_type: residual
+    tether: 0.0
+    convergence_tolerance: 1.0e-5
+    convergence_patience: 5
+  loss:
+    name: video-supervised-contrastive-v1
+    temperature: 0.1
+optimizer:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  eps: 1.0e-8

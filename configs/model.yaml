@@ -1,0 +1,17 @@
+model:
+  id: facebook/vjepa2-vitl-fpc64-256
+  attention_implementation: sdpa
+  frames_per_clip: 64
+  crop_size: 256
+  patch_size: 16
+  tubelet_size: 2
+  hidden_size: 1024
+  num_hidden_layers: 24
+  num_attention_heads: 16
+  runtime_architecture: jepa_dowload/src/models/vision_transformer.py
+  checkpoint_source: huggingface
+  output_pooling: mean
+  output_normalization: l2
+  gaussian_latent_dim: 256
+  variance_floor: 1.0e-4
+  freeze_encoder: true  # Required for an initial 12 GB GPU run.

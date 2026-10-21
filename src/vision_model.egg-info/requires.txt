@@ -1,0 +1,12 @@
+numpy<3,>=1.26
+scikit-learn<2,>=1.4
+Pillow<13,>=11
+PyYAML<7,>=6
+torch<2.8,>=2.7
+torchvision<0.23,>=0.22
+torchcodec<0.6,>=0.5
+transformers==4.57.6
+accelerate==1.15.0
+
+[test]
+pytest<10,>=8
