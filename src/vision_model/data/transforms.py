@@ -75,6 +75,7 @@ class OfficialVJEPA2Transform:
         thermal_config: ThermalAugConfig | None = None,
         preserve_field_of_view: bool = True,
         augmentation: ThermalAugmentor | None = None,
+        output_size: int | None = None,
     ) -> None:
         try:
             from transformers import AutoVideoProcessor
@@ -85,6 +86,9 @@ class OfficialVJEPA2Transform:
         self.model_id = model_id
         self.preserve_field_of_view = preserve_field_of_view
         self.augmentation = augmentation
+        if output_size is not None and (output_size < 32 or output_size % 16 or not preserve_field_of_view):
+            raise ValueError('Explicit output_size requires full-frame preservation and a multiple of 16 >=32')
+        self.output_size = output_size
         if augmentation is not None and not preserve_field_of_view:
             raise ValueError("Spill-safe thermal augmentation requires full-frame preservation")
         self.processor = AutoVideoProcessor.from_pretrained(model_id)
@@ -122,6 +126,8 @@ class OfficialVJEPA2Transform:
                 raise ValueError("Field-of-view preservation expects uint8 frames [T,C,H,W]")
             crop = self.processor.crop_size
             height, width = int(crop["height"]), int(crop["width"])
+            if self.output_size is not None:
+                height = width = self.output_size
             source_height, source_width = frames.shape[-2:]
             scale = min(height / source_height, width / source_width)
             resized_height = max(1, min(height, round(source_height * scale)))

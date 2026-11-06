@@ -14,7 +14,7 @@ def standardized(x: torch.Tensor) -> torch.Tensor:
 
 
 class TrajectoryModel(nn.Module):
-    """Inputs must be frozen, past-only prefix features, never full-video tokens.
+    """Inputs must be past-only prefix features, never full-video tokens.
 
     Shared states retain backbone width. Only whole-episode semantic embeddings
     are class clustered; intermediate states are not assigned episode labels.
@@ -70,11 +70,13 @@ class TrajectoryModel(nn.Module):
 def trajectory_loss(model, teacher, valid, timestamps, labels, *, epoch: int,
                     curriculum_epochs: int = 20, align_weight: float = 0.1,
                     predict_weight: float = 1.0, keep_weight: float = 0.1,
-                    horizons: tuple[int, ...] = (1, 2, 4)):
+                    horizons: tuple[int, ...] = (1, 2, 4), student_features=None):
     """Two matched views [N,2,T,D]; per-term means do not depend on padding.
 
     Predict normalized frozen teacher changes over approximately .5/1/2 seconds.
     Timestamp deltas, rather than step numbers, condition the predictor.
+    Optional student_features retain their gradient through the adapter. Teacher
+    remains a detached target; omitting students preserves the original path.
     """
     if teacher.ndim != 4 or teacher.shape[1] != 2:
         raise ValueError("Two synchronized views [N,2,T,D] are required")
@@ -85,8 +87,11 @@ def trajectory_loss(model, teacher, valid, timestamps, labels, *, epoch: int,
     n, views, time, width = teacher.shape
     mask = valid[:, None].expand(n, views, time).reshape(n * views, time)
     stamps = timestamps[:, None].expand(n, views, time).reshape(n * views, time)
-    frozen = teacher.detach().reshape(n * views, time, width)
-    output = model(frozen, mask, stamps)
+    if student_features is not None and student_features.shape != teacher.shape:
+        raise ValueError("Student features must match the frozen teacher [N,2,T,D]")
+    source = teacher.detach() if student_features is None else student_features
+    output = model(source.reshape(n * views, time, width), mask, stamps,
+                   detach_teacher=student_features is None)
     return trajectory_loss_from_output(model, teacher, valid, timestamps, labels, output,
         epoch=epoch, curriculum_epochs=curriculum_epochs, align_weight=align_weight,
         predict_weight=predict_weight, keep_weight=keep_weight, horizons=horizons)
@@ -155,7 +160,7 @@ class DistributedTrajectoryStep(nn.Module):
     def forward(self, teacher, valid, timestamps, labels, *, epoch: int,
                 curriculum_epochs: int = 20, align_weight: float = .1,
                 predict_weight: float = 1., keep_weight: float = .1,
-                microbatch_sources: int | None = None):
+                microbatch_sources: int | None = None, student_features=None):
         weights = dict(epoch=epoch, curriculum_epochs=curriculum_epochs,
                        align_weight=align_weight, predict_weight=predict_weight,
                        keep_weight=keep_weight)
@@ -163,10 +168,14 @@ class DistributedTrajectoryStep(nn.Module):
             raise ValueError("microbatch_sources must be positive")
         if microbatch_sources is None and (not dist.is_available() or not dist.is_initialized()
                                            or dist.get_world_size() == 1):
-            return trajectory_loss(self.model, teacher, valid, timestamps, labels, **weights)
+            return trajectory_loss(self.model, teacher, valid, timestamps, labels,
+                                   student_features=student_features, **weights)
         n, views, time, width = teacher.shape
         if views != 2 or n == 0:
             raise ValueError("Each distributed rank needs source videos with two views")
+        if student_features is not None and student_features.shape != teacher.shape:
+            raise ValueError("Student features must match the frozen teacher [N,2,T,D]")
+        source = teacher.detach() if student_features is None else student_features
         mask = valid[:, None].expand(n, views, time).reshape(n * views, time)
         stamps = timestamps[:, None].expand(n, views, time).reshape(n * views, time)
         source_chunk = microbatch_sources or n
@@ -174,8 +183,9 @@ class DistributedTrajectoryStep(nn.Module):
         for start in range(0, n, source_chunk):
             stop = min(start + source_chunk, n)
             chunks.append(self.model(
-                teacher[start:stop].detach().reshape((stop - start) * views, time, width),
-                mask[start * views:stop * views], stamps[start * views:stop * views]))
+                source[start:stop].reshape((stop - start) * views, time, width),
+                mask[start * views:stop * views], stamps[start * views:stop * views],
+                detach_teacher=student_features is None))
         local = {key: torch.cat([part[key] for part in chunks], dim=0) for key in chunks[0]}
         if not dist.is_available() or not dist.is_initialized() or dist.get_world_size() == 1:
             return trajectory_loss_from_output(self.model, teacher, valid, timestamps,

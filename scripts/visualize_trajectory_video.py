@@ -157,7 +157,11 @@ def main(argv=None):
     p.add_argument("--faithfulness", action="store_true")
     p.add_argument("--temporal-only", action="store_true",
                    help="Skip the frozen V-JEPA final-block spatial diagnostic")
+    p.add_argument("--spatial-shared-scale",type=float,
+                   help="Positive common gradient scale for comparable videos; otherwise one fixed clip maximum")
     args = p.parse_args(argv)
+    if args.spatial_shared_scale is not None and not 0<args.spatial_shared_scale<float('inf'):
+        p.error('--spatial-shared-scale must be positive and finite')
     if not args.video.is_file():
         p.error(f"Video does not exist: {args.video}")
     if args.output.exists():
@@ -244,7 +248,7 @@ def main(argv=None):
             frames_by_index=frames_by_index, sampled_frame_indices=source_indices,
             source_fps=fps, playback_fps=sampling["target_fps"],
             checkpoint_image_size=transform.processor.crop_size["height"] if hasattr(
-                transform, "processor") else 256))
+                transform, "processor") else 256,shared_scale=args.spatial_shared_scale))
         torch.save(dict(positive_maps=spatial.positive_maps, signed_maps=spatial.signed_maps,
                         raw_attention_maps=spatial.raw_attention_maps),
                    args.output / "spatial_final_block_maps.pt")
@@ -262,6 +266,11 @@ def main(argv=None):
                    source_fps=fps, sampled_source_frame_indices=source_indices,
                    sampling=sampling, figures=[path.name for path in figures],
                    spatial_diagnostic=None if spatial is None else spatial.metadata(),
+                   spatial_rendering=None if spatial is None else dict(
+                       scope='conditional_attention_key_gradient',opacity='0.4 * min(positive_gradient / shared_scale, 1)',
+                       zero='exactly transparent',interpolation='nearest native cells',
+                       scale=float(spatial.positive_maps.max()) if args.spatial_shared_scale is None else args.spatial_shared_scale,
+                       scale_policy='one fixed clip maximum' if args.spatial_shared_scale is None else 'explicit shared scale'),
                    faithfulness=faithfulness,
                    note="Final-block spatial patch sensitivity and temporal relevance; neither is a validated spill mask")
     (args.output / "attribution.json").write_text(json.dumps(payload, indent=2))

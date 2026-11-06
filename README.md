@@ -115,9 +115,13 @@ each key patch across causal prefixes containing it. This is the positive
 gradient rule inspired by [LeGrad](https://openaccess.thecvf.com/content/ICCV2025/papers/Bousselham_LeGrad_An_Explainability_Method_for_Vision_Transformers_via_Feature_Formation_ICCV_2025_paper.pdf)
 and its [official code](https://github.com/WalBouss/LeGrad/tree/main/legrad).
 V-JEPA has no CLS token here; the 16×16 patch map is mapped back through the
-full-frame letterbox transform to the original frame. Blue marks lower and red
-marks higher positive attribution on one color scale shared by every frame;
-blue does not mean no spill. `spatial_final_block_maps.pt` keeps positive,
+full-frame letterbox transform to the original frame. Native cells are retained;
+zero attribution leaves the original RGB unchanged. Red opacity is
+`0.4 * min(positive_gradient / shared_scale, 1)` with one scale across frames.
+Use `--spatial-shared-scale VALUE` to compare several clips on the same scale;
+otherwise the recorded scale is the single clip's maximum. Contextual episode
+feature contributions are excluded from localization overlays.
+`spatial_final_block_maps.pt` keeps positive,
 signed, and raw-attention maps, while `attribution.json` records numerical
 replay errors and the target.
 
@@ -706,7 +710,206 @@ classification/retrieval metrics, schedule failures and reproducibility details.
 The [original diagnosis](reports/experiments/trajectory_80_sources_real_ddp_all_losses_20261021/research_diagnosis/report.md)
 documents the original spatial pooling bottleneck and shortcut evidence.
 
-## 12. Tests and environment
+## 12. Direct all-patch ViCo experiment (no MIL)
+
+`scripts/train_patch_vico.py` implements the user-directed patch-level
+experiment in [vico.md](vico.md). Every content-valid patch participates in
+the loss. Same-original-image positive pairs have weight one; different-image,
+same-class pairs use the detached uncertainty curriculum. Original image IDs
+include the selected causal tubelet and remain separate from split/source IDs.
+There is no MIL, learned instance selection, decoder or mirror-attention loss.
+
+The original episode ViCo and temporal pipeline remain unchanged. The new
+`training/patch_vico.py` uses exact rowwise uncertainty ranks and a chunked,
+first-order stop-mining gradient. This avoids the original helper's cubic
+rank tensor and a dense all-pairs backward graph. A deterministic tubelet
+schedule uses all 64 training sources and both real cached views each update,
+retaining every one of their 192 content cells. The default budget is 100
+updates, seed 239, LR 1e-3, with AdamW state reset before update 21.
+
+```bash
+python -m torch.distributed.run --standalone --nproc_per_node=2 \
+  scripts/train_patch_vico.py --output /path/to/new/patch_baseline
+python -m torch.distributed.run --standalone --nproc_per_node=2 \
+  scripts/train_patch_vico.py --cases all_patch --local-keep-weight 1 \
+  --output /path/to/new/patch_retention
+python -m torch.distributed.run --standalone --nproc_per_node=2 \
+  scripts/control_patch_vico.py --run /path/to/new/patch_baseline \
+  --additional-run /path/to/new/patch_retention
+python scripts/report_patch_vico.py --run /path/to/new/patch_baseline \
+  --additional-run /path/to/new/patch_retention
+```
+
+The baseline command runs fixed-mean episode, direct-patch, and uniform-positive
+controls from identical initial weights. `--local-keep-weight` defaults to zero.
+The optional local term preserves the immutable initial projector's features;
+it is a new spatial objective, distinct from the original temporal retention.
+
+Direct all-patch training retains 16/16 validation classification but increases
+within-image patch cosine to 0.952. Local retention with weight one raises
+feature variance from 0.0481 to 0.2438 and mirror correspondence from 22.16% to
+23.51%, with 16/16 classification. These are representation improvements;
+input-removal controls do not validate spill localization. The spatial loss
+uses weak image-label associations, not verified patch masks.
+
+Saved signed contribution maps reconstruct the exact evaluated prototype
+margin under valid-patch averaging. They describe contextual token features,
+not calibrated pixel probabilities. `scripts/attribute_patch_vico.py` also
+tests fresh full-encoder input gradients and reports integration completeness;
+its numerical diagnostics must be checked before interpreting the maps.
+
+See the [all-patch diagnosis and results](reports/experiments/all_patch_vico_80_sources_20261021/report.md).
+Keep the original temporal checkpoint as the supported recognition baseline.
+
+## 13. Final-attention experiment and corrected overlays
+
+The completed [80-source investigation](reports/experiments/final_attention_80_sources_20261021/report.md)
+compares frozen attention with training only block-23 Q/K/V/output projections,
+at learning rates 3e-6 and 1e-4. Each arm uses the same 64/16 source split,
+projector initialization, objective and 100 continuation updates. All achieve
+16/16 class recognition; none establishes reliable focus on the actual liquid.
+The all-patch weak labels still permit a scene-wide class code. Source
+resolution also perfectly correlates with class, although resolution
+equalization alone does not remove recognition.
+
+The rendering fix separates contextual class votes from spatial evidence,
+makes zero relevance transparent, encodes magnitude through opacity, and
+preserves native cells. See the [corrected 80-source gallery](reports/experiments/final_attention_80_sources_20261021/attention_lr1em4_100/figures_v2/index.html)
+and [direct input-region interventions](reports/experiments/final_attention_80_sources_20261021/input_occlusion_figures_v2/index.html).
+The [corrected 80-video MP4 gallery](reports/experiments/test_80_fixed_20261021/index.html)
+uses actual sampled frames and the same numerical maps, with source/checkpoint
+hashes and an exact pixel audit. The video renderer resizes source RGB before
+compositing, so resizing cannot spread color into a zero-evidence cell.
+The latest gallery also provides an explicit blue-to-red display: low
+nonnegative sensitivity is blue and the shared scale maximum is red, at fixed
+opacity 0.4. It places the raw heatmaps beside the overlays and marks their
+numerical maxima automatically. Blue is not a verified background label.
+The earlier magnitude-opacity videos are retained separately. See the
+[complete requirements review](reports/experiments/test_80_fixed_20261021/report.md),
+including separate validation t-SNE, classification curves and original temporal
+curves. The audit verifies all 160 source/model map sets; it confirms diffuse
+numerical gradients rather than establishing successful spill localization.
+The original `test_80` figures are historical contextual contribution maps;
+they are preserved and must not be presented as validated spill masks.
+The original trajectory loss and executable training defaults remain unchanged.
+No MIL, decoder or mirror regularizer was added.
+
+## 14. Experimental spatial readouts with the original trajectory logic
+
+The current user constraint is **no manual spatial annotations**. The completed
+[two-H100 annotation-free study](reports/experiments/spill_annotation_free_80_20261021/report.md)
+tests 16 clean-reference feature configurations, two matched normal-only
+readouts, an automatic local probe, and matched trajectory-only/joint pilots.
+It includes actual-input removal controls, all-80-video galleries, t-SNE and
+component/total loss curves. The automatic candidates are unverified, and their
+agreement is not localization accuracy. Recognition remains 16/16, but the joint
+local objective does not establish spill-focused decision evidence. Do not
+promote that checkpoint as a solved spill localizer.
+
+Run `scripts/benchmark_normal_spill.py` for training-clean references, or pass
+`--pseudo-cache .../normal_reference/maps.pt --pseudo-case block5_raw` to
+`scripts/train_spill_localization.py` for the explicit automatic-candidate path.
+No decoder, MIL, manual points or positive-video-to-all-patch labels are required.
+See [protocol and commands](docs/spill-localization.md). Original default training
+still uses the authoritative four losses; these spatial pilots are opt-in.
+
+The earlier verified-point implementation remains an optional alternative:
+
+The approved [dual-loss audit](reports/experiments/spill_attention_dual_loss_audit_20261021/report.md)
+is implemented as an opt-in path in `scripts/train_spill_localization.py`:
+
+`L_joint = L_ViCo(episode) + 0.1 L_align + L_predict + 0.1 L_keep + lambda_FGBG L_FGBG`.
+
+The new partial FG/BG loss uses verified liquid/non-liquid points; all other
+patches are ignored. There is no video-label expansion into spatial targets,
+extra spatial retention-1 term, MIL, decoder or mirror loss. A frozen-feature
+probe precedes a selective final-attention pilot. The pilot shares its patch
+features with the unchanged causal TrajectoryModel, preserves gradient flow
+through its student input, and keeps its original teacher targets detached.
+Trajectory weights and all earlier backbone blocks stay frozen in that pilot.
+
+See [annotation format, commands and validation criteria](docs/spill-localization.md)
+and the [implementation report](reports/experiments/spill_fg_bg_implementation_20261021/report.md).
+No verified spatial labels were available at implementation time, so real
+FG/BG training and localization improvement have not been established.
+The generated review template contains no labels. The trainer rejects missing
+training foreground/background rather than falling back to episode labels.
+`scripts/visualize_spill_localization.py` separately displays supervised local
+scores and gradients of the actual joint trajectory decision. Original default
+training behavior and existing experiment artifacts remain unchanged.
+
+## 15. Decision-connected dense spatial experiments
+
+The [dense spatial path](docs/dense-spill.md) is an opt-in experiment alongside
+the unchanged four-loss causal trajectory baseline. It strictly loads the
+frozen V-JEPA 2.1 ViT-L checkpoint, preserves native patch tokens, expands
+training-clean reference coverage and requires same-frame foreground/background
+support inside positive training sources. Automatic candidates are unverified.
+
+Its separate readout uses fixed valid-patch averaging and training-only
+prototypes. Signed patch contributions reconstruct that readout's own episode
+margin. Its objective is episode ViCo plus an explicitly calibrated,
+source-balanced partial FG/BG term. This does not replace the original four
+trajectory losses. Cold-pixel candidates and an optional local-contrast input
+are experimental, cold-only additions; they do not establish liquid masks.
+Seven matched 100-update readouts were evaluated on two H100 GPUs. The final
+amplitude-preserving variant reaches 15/16 source-selection classification,
+but still activates incorrect regions in difficult spill frames. It is not
+promoted as a successful spill localizer or a replacement default.
+See [the new implementation experiment](reports/experiments/spill_dense_fix_80_20261022/report.md)
+for measured results and limitations.
+
+The subsequent [finite-field thermal branch](docs/local-thermal.md) removes
+the final contextual-token bypass and compares same-image regions with local
+surroundings. Its [80-source tests](reports/experiments/spill_local_relative_80_20261022/report.md)
+include pointwise and local convolutional readouts, 100/1000-update controls,
+and fresh-input locality checks on two H100s. The tested local scores are
+independent of distant context, but the inspected spill cases still fail
+reliable liquid focus. This remains experimental; the default four-loss
+trajectory and its original checkpoints are preserved.
+
+## 16. Opt-in Experiment 81: online full-backbone comparison
+
+[Experiment 81](docs/experiment81.md) adds separate executable paths for a matched
+frozen control and online fine-tuning of all 24 JEPA encoder blocks plus the
+trajectory model. Both retain the original four losses and immutable teacher
+targets. The cached-feature pipeline above remains the default.
+
+Run `bash scripts/run_experiment81.sh NEW_OUTPUT_DIRECTORY` on an allocated GPU
+node, followed by `bash scripts/run_experiment81_spatial.sh NEW_OUTPUT_DIRECTORY`
+for the spatial audit. Sources, settings, source snapshots, gradient replay,
+all-block parameter changes and checkpoint provenance are recorded. The new
+precision-matched teacher is recomputed from the original pretrained weights;
+historical BF16-weight cache differences are reported explicitly.
+
+The [6 November execution](reports/experiments/experiment_81_execution_20261106)
+uses the existing 80-source 64/16 split and the one H100 available on rg32101.
+Both arms completed 100 updates and classify all 16 reused selection sources
+correctly. The [diagnosis](reports/experiments/experiment_81_execution_20261106/diagnosis.md)
+records that reliable liquid localization still failed. Loss curves, t-SNE,
+all-source spatial maps, all-24-block comparisons and fresh-input controls are
+available separately; fitting episode labels does not establish spill focus.
+No manual annotations, MIL or segmentation decoder are introduced.
+
+The follow-up [normalized-attention audit](reports/experiments/spill_attention_competition_80_20261106/report.md)
+compares probability and softmax-logit sensitivities without changing weights.
+Its inspected spill focus still fails. A separate
+[elapsed-clock ablation](reports/experiments/spill_relative_clock_80_20261106/report.md)
+adds `--clock-policy relative_prefix` to the experimental trainer only; the
+default remains absolute. It preserves the four losses and removes tested
+file-origin dependence, but still fails the additional clean acquisition
+counterexample and reliable localization. Its
+[named curves and t-SNE](reports/experiments/spill_relative_clock_80_20261106/tsne_curves/README.md)
+are separate from the full-backbone comparison above.
+
+The [model-locality follow-up](reports/experiments/spill_context_locality_20261106/report.md)
+adds read-only probes of all24 blocks, empty letterbox tokens, constant-input
+prefixes and76 additional byte-unique sources. Class information survives in
+contextual padding tokens; content-only pooling still fails liquid focus.
+Recognition on the additional sources remains strong, and is kept separate
+from localization. These tests add no training updates or new default loss.
+
+## 17. Tests and environment
 
 The package declares Python 3.11-3.13, PyTorch 2.7, torchvision 0.22,
 Transformers 4.57.6, and Accelerate 1.15. The available experiment environment
@@ -724,7 +927,7 @@ augmentation behavior, causal trajectory handling, checkpoint conversion,
 final-block reconstruction, FFmpeg decoding, pipeline orchestration, and
 video attribution. Distributed tests need local socket access; run them on a
 node where that access is available. The real two-GPU smoke run is documented
-in [cluster.md](cluster.md). The latest full suite completed with **151 passed,
+in [cluster.md](cluster.md). The latest full suite completed with **257 passed,
 4 skipped**.
 
 Historical Gaussian, shared-denominator SupCon, margin, and duplicate-containing

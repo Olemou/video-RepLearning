@@ -180,10 +180,12 @@ def test_direct_video_entry_point_writes_target_conditioned_spatial_overlay(tmp_
     maps = torch.load(output / "spatial_final_block_maps.pt", weights_only=True)
     assert maps["positive_maps"].shape == (4, 2, 2)
     assert maps["positive_maps"][3].count_nonzero() == 0  # target at step 2
+    assert metadata['spatial_rendering']['zero']=='exactly transparent'
+    assert metadata['spatial_rendering']['scope']=='conditional_attention_key_gradient'
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="FFmpeg required")
-def test_spatial_overlay_uses_blue_for_low_and_red_for_high(tmp_path):
+def test_spatial_overlay_preserves_zero_pixels_and_uses_one_magnitude_scale(tmp_path):
     maps = torch.tensor([[[0., 1.], [0., 1.]],
                          [[0., .5], [0., .5]]])
     result = SpatialFinalBlockResult(maps, maps, maps, torch.ones(2), 0., 0., 1.)
@@ -192,9 +194,16 @@ def test_spatial_overlay_uses_blue_for_low_and_red_for_high(tmp_path):
         frames_by_index=frames, sampled_frame_indices=list(frames),
         source_fps=4., playback_fps=4., checkpoint_image_size=16)
     decoded = subprocess.run(["ffmpeg", "-v", "error", "-i", str(video),
-                              "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                              "-frames:v", "4", "-f", "rawvideo", "-pix_fmt", "rgb24",
                               "pipe:1"], capture_output=True, check=True).stdout
-    image = np.frombuffer(decoded, dtype=np.uint8).reshape(500, 1280, 3)
-    low, high = image[200, 790], image[200, 1130]
-    assert int(low[2]) > int(low[0]) + 50  # blue on the low-attribution side
-    assert int(high[0]) > int(high[2]) + 50  # red on the high-attribution side
+    image = np.frombuffer(decoded, dtype=np.uint8).reshape(4,500,1280,3)
+    low, high = image[0,200,790], image[0,200,1130]
+    assert np.max(np.abs(low.astype(int)-128))<=5  # codec tolerance; no blue wash
+    # The native-cell boundary is x=960 in this video. A second bilinear
+    # resize after compositing would spread red into the zero cell at x=952.
+    assert np.max(np.abs(image[0,200,952].astype(int)-128))<=5
+    assert int(high[0]) > int(high[2]) + 70
+    # Half the attribution in the later tubelet must have lower opacity; no
+    # per-frame max normalization may turn it into another full-red cell.
+    later=image[2,200,1130]
+    assert int(high[0])-int(later[0])>15

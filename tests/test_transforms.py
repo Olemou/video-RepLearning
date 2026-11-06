@@ -48,6 +48,16 @@ class TransformTests(unittest.TestCase):
         self.assertEqual(transform.normalization["mean"], (0.485, 0.456, 0.406))
 
     @patch("transformers.AutoVideoProcessor.from_pretrained")
+    def test_explicit_dense_resolution_preserves_full_frame_and_normalization(self, load_processor):
+        processor=FakeProcessor();load_processor.return_value=processor
+        transform=OfficialVJEPA2Transform(output_size=384)
+        transform(torch.full((2,3,480,640),50,dtype=torch.uint8))
+        self.assertEqual(tuple(processor.frames.shape),(2,3,384,384))
+        self.assertTrue((processor.frames[:,:,48:336]==50).all())
+        self.assertEqual(transform.normalization['mean'],(0.485,0.456,0.406))
+        with self.assertRaises(ValueError):OfficialVJEPA2Transform(output_size=383)
+
+    @patch("transformers.AutoVideoProcessor.from_pretrained")
     def test_letterbox_preserves_frame_edges_and_disables_center_crop(self, load_processor) -> None:
         processor = FakeProcessor()
         load_processor.return_value = processor

@@ -5,10 +5,12 @@ from pathlib import Path
 import subprocess
 
 import numpy as np
+import torch
 from PIL import Image, ImageDraw
 
 from .temporal_attribution import TemporalAttribution
 from .spatial_final_block import SpatialFinalBlockResult
+from .map_geometry import spatial_evidence_overlay
 
 
 def _color(value: float, maximum: float) -> tuple[int, int, int]:
@@ -232,11 +234,13 @@ def save_temporal_overlay_video(result: TemporalAttribution, output: Path, *,
 def save_spatial_final_block_video(result: SpatialFinalBlockResult, output: Path, *,
                                    frames_by_index: dict[int, np.ndarray],
                                    sampled_frame_indices: list[int], source_fps: float,
-                                   playback_fps: float, checkpoint_image_size: int = 256) -> Path:
+                                   playback_fps: float, checkpoint_image_size: int = 256,
+                                   shared_scale: float | None = None) -> Path:
     """Overlay target-conditioned V-JEPA patch sensitivity on sampled frames.
 
-    One global color scale covers every frame. The checkpoint's full-frame
-    letterbox is inverted before resizing the 16x16 map to source pixels.
+    Opacity encodes magnitude and zero leaves original RGB pixels unchanged.
+    Native key-cell boundaries are retained. Supply shared_scale for videos
+    being compared; otherwise a single clip uses its own fixed maximum.
     """
     maps = result.positive_maps.numpy()
     length, grid_height, grid_width = maps.shape
@@ -253,7 +257,9 @@ def save_spatial_final_block_video(result: SpatialFinalBlockResult, output: Path
         raise FileExistsError(destination)
     panel_width, panel_height, caption_height = 640, 400, 100
     width, height = panel_width * 2, panel_height + caption_height
-    maximum = float(maps.max())  # shared over all frames; never renormalize each frame
+    maximum = float(maps.max()) if shared_scale is None else float(shared_scale)
+    if not np.isfinite(maximum) or maximum < 0 or (shared_scale is not None and maximum==0):
+        raise ValueError('Shared scale must be positive and finite')
     command = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
                "-s", f"{width}x{height}", "-r", str(playback_fps), "-i", "pipe:0",
                "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
@@ -263,33 +269,22 @@ def save_spatial_final_block_video(result: SpatialFinalBlockResult, output: Path
         for position, source_index in enumerate(sampled_frame_indices):
             token = position // 2
             original = frames_by_index[source_index]
-            source_height, source_width = original.shape[:2]
-            scale = min(checkpoint_image_size / source_height,
-                        checkpoint_image_size / source_width)
-            resized_height = max(1, min(checkpoint_image_size, round(source_height * scale)))
-            resized_width = max(1, min(checkpoint_image_size, round(source_width * scale)))
-            top = (checkpoint_image_size - resized_height) // 2
-            left = (checkpoint_image_size - resized_width) // 2
-            # PIL mode F keeps continuous positive scores for bilinear resizing.
-            square = Image.fromarray(maps[token].astype(np.float32), mode="F").resize(
-                (checkpoint_image_size, checkpoint_image_size), Image.Resampling.BILINEAR)
-            content = square.crop((left, top, left + resized_width, top + resized_height))
-            heat = np.asarray(content.resize((source_width, source_height),
-                                             Image.Resampling.BILINEAR), dtype=np.float32)
-            intensity = np.clip(heat / maximum, 0, 1) if maximum > 0 else np.zeros_like(heat)
+            # Resize the source first. Resizing a composited overlay afterward
+            # would interpolate red across a zero-evidence cell boundary.
+            source_frame = Image.fromarray(original).convert('RGB')
+            panel_scale = min(panel_width / source_frame.width, panel_height / source_frame.height)
+            source_frame = source_frame.resize((max(1, round(source_frame.width * panel_scale)),
+                max(1, round(source_frame.height * panel_scale))), Image.Resampling.BILINEAR)
+            display = np.asarray(source_frame).copy()
             if maximum > 0:
-                color = _spatial_color(intensity)
-                overlay = np.clip(.45 * original.astype(np.float32) + .55 * color,
-                                  0, 255).astype(np.uint8)
+                overlay = spatial_evidence_overlay(torch.from_numpy(display),
+                    torch.from_numpy(maps[token]),scale=maximum,signed=False,alpha=.4,
+                    scope='conditional_attention_key_gradient',checkpoint_size=checkpoint_image_size).numpy()
             else:
-                overlay = original.copy()  # no positive gradients to color
+                overlay = display.copy()  # no positive gradients to color
             canvas = Image.new("RGB", (width, height), (18, 23, 32))
-            for column, source in enumerate((original, overlay)):
+            for column, source in enumerate((display, overlay)):
                 frame = Image.fromarray(source).convert("RGB")
-                panel_scale = min(panel_width / frame.width, panel_height / frame.height)
-                frame = frame.resize((max(1, round(frame.width * panel_scale)),
-                                      max(1, round(frame.height * panel_scale))),
-                                     Image.Resampling.BILINEAR)
                 canvas.paste(frame, (column * panel_width + (panel_width - frame.width) // 2,
                                      (panel_height - frame.height) // 2))
             draw = ImageDraw.Draw(canvas)
@@ -300,12 +295,13 @@ def save_spatial_final_block_video(result: SpatialFinalBlockResult, output: Path
                       f"Frame {source_index} | {source_index / source_fps:.2f}s | tubelet {token}",
                       fill="white")
             draw.text((12, panel_height + 57),
-                      "Blue: lower | Red: higher patch sensitivity; not a spill mask",
+                      "Zero: transparent | Red opacity: conditional key sensitivity; not a pixel/spill mask",
                       fill="white")
             if maximum > 0:
                 bar_left, bar_right, bar_top = panel_width + 95, width - 95, panel_height + 76
                 gradient = np.linspace(0, 1, bar_right - bar_left + 1, dtype=np.float32)
-                colors = _spatial_color(gradient)
+                amount=.4*gradient[:,None]
+                colors=(np.array([18,23,32])*(1-amount)+np.array([255,0,0])*amount).astype(np.uint8)
                 for x, color in enumerate(colors, start=bar_left):
                     draw.line((x, bar_top, x, bar_top + 12), fill=tuple(int(c) for c in color))
                 draw.text((panel_width + 12, bar_top), "Low", fill="white")
