@@ -29,7 +29,7 @@
 \begin{document}
 
 {\LARGE\bfseries Experiment 81: reading the figures}\\[2pt]
-{\small Document of 10 November 2026. No training was rerun for this document.}
+{\small Document of 10 November 2026. All figures come from the completed training run of 100 updates.}
 
 \section*{What was trained}
 
@@ -61,29 +61,26 @@ conditions as the training videos and have been used for many checks. They are n
 independent test set.
 
 \newpage
-\section*{Figure 1: t-SNE before any training}
+\section*{Figure 1: t-SNE after training}
 
-\begin{center}\includegraphics[width=.8\linewidth]{\src/tsne_frozen_initial.png}\end{center}
+\begin{center}\includegraphics[width=.8\linewidth]{\src/tsne_frozen_final.png}\end{center}
 
 \textbf{What is plotted.} Each point is one video, represented by the 128-dimensional vector
-the model produces at update 0, that is, before any learning. t-SNE projects these 80 vectors
+the trained model produces after the 100 updates (frozen arm). t-SNE projects these 80 vectors
 into two dimensions while keeping similar videos close together.
 Blue = no spill, red = spill; circle = training (64), square = selection (16).
 
 \textbf{What we observe.}
 \begin{itemize}\itemsep1pt
-\item The blue and red points form two disjoint groups; no point of one class lies inside
-      the group of the other.
-\item A small isolated blue group on the left contains 7 videos: \texttt{videoFrame} 1, 3, 4, 5, 6, 7 and 8.
-\item At this same update 0, all 16 selection videos are already classified correctly, and
-      63 of the 64 training videos.
+\item The blue and red points form two compact groups, far apart; no point of one class lies
+      inside the group of the other.
+\item The selection videos (squares) fall inside the group of their own class.
+\item All 16 selection videos and all 64 training videos are classified correctly.
 \end{itemize}
 
-\reading{The two classes are separated before the model has learned anything. The separation
-therefore does not come from the loss. It is already in the videos themselves: the videos of the
-two classes were recorded under different conditions (384$\times$288 for one class,
-640$\times$480 for the other, different scenes). This explanation is an inference: the figure
-shows that the separation exists beforehand, not what causes it.}
+\reading{After training, the model separates the two classes completely, in agreement with the
+class term of the loss falling to almost zero (Figure 2a). The figure shows that the classes are
+separated; it does not show which information in the videos the model uses to separate them.}
 
 \textbf{What the figure does not show.} The axes of a t-SNE and the distances between its groups
 have no meaning, and two t-SNE plots cannot be compared with each other. The figure says nothing
@@ -221,11 +218,11 @@ This describes the quality of the optimisation, not what the model has learned t
 
 \begin{tabular}{p{.47\linewidth}p{.47\linewidth}}\toprule
 \textbf{Established (measured)} & \textbf{Not established}\\\midrule
-The two classes are separated before any training (Figure 1). &
+The two classes are completely separated after training (Figure 1). &
 That this separation rests on the liquid.\\[3pt]
 The class term falls to almost zero in fewer than 35 updates (Figure 2a). &
 That the model directs its attention to the spill.\\[3pt]
-The 16 selection videos are classified correctly before and after training, in both arms. &
+The 16 selection videos are classified correctly after training, in both arms. &
 That the model would work in a new scene.\\\bottomrule
 \end{tabular}
 

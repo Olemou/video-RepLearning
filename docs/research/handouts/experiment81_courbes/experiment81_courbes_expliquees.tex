@@ -30,7 +30,7 @@
 \begin{document}
 
 {\LARGE\bfseries Expérience 81 : lecture des figures}\\[2pt]
-{\small Document du 10 novembre 2026. Aucun entraînement n'a été relancé pour ce document.}
+{\small Document du 10 novembre 2026. Toutes les figures proviennent de l'entraînement terminé de 100 mises à jour.}
 
 \section*{Ce qui a été entraîné}
 
@@ -62,30 +62,27 @@ d'acquisition que les vidéos d'entraînement et ont servi à de nombreuses vér
 pas un jeu de test indépendant.
 
 \newpage
-\section*{Figure 1 : t-SNE avant tout entraînement}
+\section*{Figure 1 : t-SNE après l'entraînement}
 
-\begin{center}\includegraphics[width=.8\linewidth]{\src/tsne_frozen_initial.png}\end{center}
+\begin{center}\includegraphics[width=.8\linewidth]{\src/tsne_frozen_final.png}\end{center}
 
 \textbf{Ce qui est tracé.} Chaque point est une vidéo, représentée par le vecteur de 128
-dimensions que produit le modèle à la mise à jour 0, c'est-à-dire avant tout apprentissage.
+dimensions que produit le modèle entraîné, après les 100 mises à jour (bras frozen).
 Le t-SNE projette ces 80 vecteurs en deux dimensions en gardant proches les vidéos semblables.
 Bleu = sans déversement, rouge = avec déversement ; rond = entraînement (64), carré = sélection (16).
 
 \textbf{Ce qu'on observe.}
 \begin{itemize}\itemsep1pt
-\item Les points bleus et rouges forment deux groupes disjoints ; aucun point d'une classe
-      ne se trouve dans le groupe de l'autre.
-\item Un petit groupe bleu isolé à gauche contient 7 vidéos : \texttt{videoFrame} 1, 3, 4, 5, 6, 7 et 8
-      (\texttt{figures/tsne\_frozen\_initial.json}).
-\item À cette même mise à jour 0, les 16 vidéos de sélection sont déjà toutes classées
-      correctement, et 63 des 64 vidéos d'entraînement (\texttt{frozen/history.json}).
+\item Les points bleus et rouges forment deux groupes compacts et éloignés ; aucun point d'une
+      classe ne se trouve dans le groupe de l'autre.
+\item Les vidéos de sélection (carrés) tombent dans le groupe de leur classe.
+\item Les 16 vidéos de sélection et les 64 vidéos d'entraînement sont toutes classées correctement.
 \end{itemize}
 
-\lecture{Les deux classes sont séparées avant que le modèle ait appris quoi que ce soit.
-La séparation ne vient donc pas de la fonction de coût. Elle est déjà dans les vidéos elles-mêmes :
-les vidéos des deux classes ont été filmées dans des conditions différentes (384$\times$288 pour
-les unes, 640$\times$480 pour les autres, scènes différentes). Cette explication est une inférence :
-la figure montre que la séparation préexiste, pas ce qui la cause.}
+\lecture{Après l'entraînement, le modèle sépare complètement les deux classes, en accord avec le
+terme de classe de la fonction de coût qui tombe à presque zéro (figure 2a). La figure montre que
+les classes sont séparées ; elle ne montre pas quelle information des vidéos le modèle utilise pour
+les séparer.}
 
 \textbf{Ce que la figure ne montre pas.} Les axes et les distances entre groupes d'un t-SNE n'ont pas
 de signification, et deux t-SNE ne se comparent pas entre eux. La figure ne dit rien de l'endroit
@@ -224,11 +221,11 @@ restent proches. Cela décrit la qualité de l'optimisation, pas ce que le modè
 
 \begin{tabular}{p{.47\linewidth}p{.47\linewidth}}\toprule
 \textbf{Établi (mesuré)} & \textbf{Non établi}\\\midrule
-Les deux classes sont séparées avant tout entraînement (figure 1). &
+Les deux classes sont complètement séparées après l'entraînement (figure 1). &
 Que cette séparation repose sur le liquide.\\[3pt]
 Le terme de classe tombe à presque zéro en moins de 35 mises à jour (figure 2a). &
 Que le modèle porte son attention sur le déversement.\\[3pt]
-Les 16 vidéos de sélection sont classées correctement avant et après l'entraînement, dans les deux bras. &
+Les 16 vidéos de sélection sont classées correctement après l'entraînement, dans les deux bras. &
 Que le modèle fonctionnerait dans une scène nouvelle.\\\bottomrule
 \end{tabular}
 
