@@ -1,7 +1,8 @@
 """Final-block replay for exact query selection and class-conditioned VJPs.
 
-This is a one-block attention-times-gradient diagnostic, not full transformer
-relevance propagation, pixel attribution, or a trained segmentation output.
+This exposes differentiable final-block probabilities. Callers choose plain
+positive gradients or attention-times-gradient; these are distinct diagnostics,
+not full relevance propagation, pixel attribution, or segmentation outputs.
 """
 import math
 
@@ -11,7 +12,7 @@ from .encoder import _rotate
 
 
 def replay_last_tubelet(encoder, hidden, *, frames: int, height: int, width: int):
-    """Return final normalized last-tubelet tokens and their attention [1,H,S,L].
+    """Return final normalized last-tubelet tokens and attention [B,H,S,L].
 
     Last-block MLPs and normalization operate tokenwise. Only the final S queries
     are consumed by this pipeline, so reconstructing them is sufficient. All
@@ -19,8 +20,8 @@ def replay_last_tubelet(encoder, hidden, *, frames: int, height: int, width: int
     Probabilities are calculated in float32; bf16 fused rounding can differ.
     """
     spatial = height * width
-    if hidden.shape[0] != 1 or hidden.shape[1] != frames * spatial:
-        raise ValueError("Expected one unpadded video with matching token grid")
+    if hidden.ndim != 3 or hidden.shape[0] < 1 or hidden.shape[1] != frames * spatial:
+        raise ValueError("Expected unpadded videos with matching token grid")
     block = encoder.blocks[-1]
     module = block.attn
     value = block.norm1(hidden)
@@ -36,7 +37,7 @@ def replay_last_tubelet(encoder, hidden, *, frames: int, height: int, width: int
     with torch.autocast(device_type=hidden.device.type, enabled=False):
         query, key = torch.cat(qs, -1)[..., -spatial:, :].float(), torch.cat(ks, -1).float()
         attention = (query @ key.transpose(-1, -2) / math.sqrt(module.head_dim)).softmax(-1)
-    attended = (attention.to(v.dtype) @ v).transpose(1, 2).reshape(1, spatial, hidden.shape[-1])
+    attended = (attention.to(v.dtype) @ v).transpose(1, 2).reshape(hidden.shape[0], spatial, hidden.shape[-1])
     state = hidden[:, -spatial:] + module.proj(attended)
     state = state + block.mlp(block.norm2(state))
     return encoder.norm(state), attention
